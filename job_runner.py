@@ -44,6 +44,15 @@ def init_db():
                 PRIMARY KEY (job_id, name)
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                sources_json TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
 
 
 def create_job(job_id: str, name: str, params: Optional[dict] = None):
@@ -99,6 +108,28 @@ def get_job(job_id: str) -> Optional[dict]:
             for s in steps
         ],
     }
+
+
+def save_chat_message(question: str, answer: str, sources: list[str]):
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO chat_history (question, answer, sources_json, created_at) VALUES (?, ?, ?, ?)",
+            (question, answer, json.dumps(sources), now),
+        )
+
+
+def get_chat_history() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM chat_history ORDER BY id").fetchall()
+    return [
+        {
+            "question": r["question"],
+            "answer": r["answer"],
+            "sources": json.loads(r["sources_json"]) if r["sources_json"] else [],
+        }
+        for r in rows
+    ]
 
 
 async def run_step(

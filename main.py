@@ -10,7 +10,7 @@ import ollama
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAGChunkAndSrc, RAGUpsertResult, RAGSearchResult
-from job_runner import init_db, create_job, run_step, set_job_status, get_job, reset_job_for_retry
+from job_runner import init_db, create_job, run_step, set_job_status, get_job, reset_job_for_retry, save_chat_message, get_chat_history
 
 load_dotenv()
 
@@ -33,6 +33,7 @@ class IngestRequest(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
+    history: list[dict] = []
 
 
 # --- Pipelines ---
@@ -65,7 +66,7 @@ async def _run_ingest(job_id: str, pdf_path: str, source_id: str):
         logger.error(f"Ingest job {job_id} failed: {e}")
 
 
-async def _run_query(job_id: str, question: str, top_k: int):
+async def _run_query(job_id: str, question: str, top_k: int, history: list[dict] | None = None):
     try:
         def _search():
             query_vec = embed_texts([question])[0]
@@ -83,18 +84,18 @@ async def _run_query(job_id: str, question: str, top_k: int):
                 f"Question: {question}\n"
                 "Answer concisely using the context above."
             )
-            res = ollama.chat(
-                model="llama3.2",
-                messages=[
-                    {"role": "system", "content": "You answer questions using only the provided context."},
-                    {"role": "user", "content": prompt},
-                ],
-            )
+            messages = [
+                {"role": "system", "content": "You answer questions using only the provided context."},
+                *(history or []),
+                {"role": "user", "content": prompt},
+            ]
+            res = ollama.chat(model="llama3.2", messages=messages)
             answer = res["message"]["content"].strip()
             return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
 
         result = await run_step(job_id, "llm-answer", _llm_answer)
         set_job_status(job_id, "completed", result)
+        save_chat_message(question, result["answer"], result.get("sources", []))
     except Exception as e:
         set_job_status(job_id, "failed", error=str(e))
         logger.error(f"Query job {job_id} failed: {e}")
@@ -115,7 +116,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
 async def query(req: QueryRequest, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
     create_job(job_id, "query", {"question": req.question, "top_k": req.top_k})
-    background_tasks.add_task(_run_query, job_id, req.question, req.top_k)
+    background_tasks.add_task(_run_query, job_id, req.question, req.top_k, req.history)
     return {"job_id": job_id, "status": "running"}
 
 
@@ -125,6 +126,11 @@ async def job_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/history")
+async def history():
+    return get_chat_history()
 
 
 @app.post("/jobs/{job_id}/retry")
