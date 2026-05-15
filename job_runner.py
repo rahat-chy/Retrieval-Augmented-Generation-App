@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 from typing import Any, Callable, Optional, Type
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("uvicorn")
 DB_PATH = "jobs.db"
@@ -47,7 +47,7 @@ def init_db():
 
 
 def create_job(job_id: str, name: str, params: Optional[dict] = None):
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
             "INSERT INTO jobs (id, name, status, params_json, created_at, updated_at) VALUES (?, ?, 'running', ?, ?, ?)",
@@ -56,7 +56,7 @@ def create_job(job_id: str, name: str, params: Optional[dict] = None):
 
 
 def reset_job_for_retry(job_id: str):
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET status='running', error=NULL, result_json=NULL, updated_at=? WHERE id=?",
@@ -73,7 +73,7 @@ def set_job_status(job_id: str, status: str, result=None, error: Optional[str] =
                 status,
                 json.dumps(result) if result is not None else None,
                 error,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 job_id,
             ),
         )

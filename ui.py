@@ -82,7 +82,7 @@ if st.button("Ingest", disabled=ingest_disabled or uploaded_file is None):
 # Ingest polling
 if st.session_state.ingest_status == "running":
     with st.spinner("Ingesting..."):
-        time.sleep(30)
+        time.sleep(2)
     job = _get_job(st.session_state.ingest_job_id)
     if job["status"] == "completed":
         ingested = (job.get("result") or {}).get("ingested", "?")
@@ -147,7 +147,7 @@ if st.button("Query", disabled=query_disabled or not (question or "").strip()):
 # Query polling
 if st.session_state.query_status == "running":
     with st.spinner("Querying..."):
-        time.sleep(30)
+        time.sleep(2)
     job = _get_job(st.session_state.query_job_id)
     if job["status"] in ("completed", "failed"):
         st.session_state.query_status = job["status"]
