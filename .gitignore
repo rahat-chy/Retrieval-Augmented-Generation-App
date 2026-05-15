@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.python-version
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Qdrant local storage
+qdrant_storage/
+
+# SQLite / job DB
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+CLAUDE.md
