@@ -25,13 +25,16 @@ class QdrantStorage:
         ).points
         contexts = []
         sources = set()
+        seen_parents: set[str] = set()
 
         for r in results:
             payload = getattr(r, "payload", None) or {}
-            text = payload.get("text", "")
+            # return parent_text for richer LLM context; dedup siblings sharing same parent
+            context = payload.get("parent_text") or payload.get("text", "")
             source = payload.get("source", "")
-            if text:
-                contexts.append(text)
+            if context and context not in seen_parents:
+                contexts.append(context)
+                seen_parents.add(context)
                 sources.add(source)
 
         return {"contexts": contexts, "sources": list(sources)}

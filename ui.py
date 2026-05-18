@@ -17,7 +17,6 @@ footer {visibility: hidden;}
 .st-key-chat_history_container [data-testid="stVerticalBlockBorderWrapper"],
 .st-key-chat_history_container > div:first-child {
     border-radius: 10px !important;
-    overflow: hidden !important;
 }
 
 /* ── Form: no border, small gap ─────────────────────────────── */
@@ -256,7 +255,7 @@ st.header("Chat")
 
 with st.container():
 
-    with st.container(height=400, border=True, key="chat_history_container"):
+    with st.container(height=600, border=True, key="chat_history_container"):
         for msg in st.session_state.chat_history:
             with st.chat_message("user"):
                 st.write(msg["question"])
@@ -291,13 +290,14 @@ with st.container():
             )
 
         with cols[1]:
-            submit_btn = st.form_submit_button("▲", use_container_width=True)
+            submit_btn = st.form_submit_button("▲", use_container_width=True, disabled=st.session_state.query_status == "running" or st.session_state.ingest_status == "running")
 
 
 _poll_query()
 
 
-if submit_btn and question and question.strip():
+_is_busy = st.session_state.query_status == "running" or st.session_state.ingest_status == "running"
+if submit_btn and question and question.strip() and not _is_busy:
     history = [
         msg
         for h in st.session_state.chat_history

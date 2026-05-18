@@ -47,17 +47,15 @@ async def _run_ingest(job_id: str, pdf_path: str, source_id: str):
         chunks_and_src = await run_step(job_id, "load-and-chunk", _load, output_type=RAGChunkAndSrc)
 
         def _upsert():
-            vecs = embed_texts(chunks_and_src.chunks)
-            ids = [
-                str(uuid.uuid5(uuid.NAMESPACE_URL, f"{job_id}:{i}"))
-                for i in range(len(chunks_and_src.chunks))
-            ]
+            chunks = chunks_and_src.chunks
+            vecs = embed_texts([c["text"] for c in chunks])
+            ids = [c["id"] for c in chunks]
             payload = [
-                {"source": chunks_and_src.source_id, "text": chunks_and_src.chunks[i]}
-                for i in range(len(chunks_and_src.chunks))
+                {"source": chunks_and_src.source_id, "text": c["text"], "parent_text": c["parent_text"]}
+                for c in chunks
             ]
             QdrantStorage().upsert(ids, vecs, payload)
-            return RAGUpsertResult(ingested=len(chunks_and_src.chunks))
+            return RAGUpsertResult(ingested=len(chunks))
 
         result = await run_step(job_id, "embed-and-upsert", _upsert, output_type=RAGUpsertResult)
         set_job_status(job_id, "completed", result.model_dump())

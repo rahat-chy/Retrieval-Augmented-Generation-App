@@ -1,7 +1,7 @@
 import pydantic
 
 class RAGChunkAndSrc(pydantic.BaseModel):
-    chunks: list[str]
+    chunks: list[dict]  # each: {id, text, parent_text}
     source_id: str | None = None
 
 class RAGUpsertResult(pydantic.BaseModel):
