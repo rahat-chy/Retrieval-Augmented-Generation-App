@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import requests
@@ -109,9 +110,10 @@ _defaults = {
     "ingest_tmp_path": None,
     "ingest_failed_job_id": None,
     "ingest_failed_source_id": None,
-    "query_job_id": None,
-    "query_status": None,
     "pending_question": None,
+    "streaming": False,
+    "stream_history": [],
+    "stream_result": {},
     "history_loaded": False,
     "chat_history": [],
     "input_key_tracker": 0,
@@ -170,35 +172,6 @@ def _poll_ingest():
         st.rerun()
 
 
-@st.fragment(run_every=2)
-def _poll_query():
-    if st.session_state.query_status != "running":
-        return
-    job = _get_job(st.session_state.query_job_id)
-    if job["status"] == "completed":
-        result = job.get("result", {})
-        st.session_state.chat_history.append({
-            "question": st.session_state.pending_question,
-            "answer": result.get("answer", ""),
-            "sources": result.get("sources", []),
-            "rewrites": result.get("rewrites", 0),
-        })
-        st.session_state.query_status = None
-        st.session_state.query_job_id = None
-        st.session_state.pending_question = None
-        st.rerun()
-    elif job["status"] == "failed":
-        err = job.get("error", "unknown error")
-        st.session_state.chat_history.append({
-            "question": st.session_state.pending_question,
-            "answer": f"Query failed: {err}",
-            "sources": [],
-        })
-        st.session_state.query_status = None
-        st.session_state.query_job_id = None
-        st.session_state.pending_question = None
-        st.rerun()
-
 
 # Load history from DB once per session
 if not st.session_state.history_loaded:
@@ -215,7 +188,7 @@ if not st.session_state.history_loaded:
 
 st.header("Ingest PDF")
 
-ingest_disabled = st.session_state.ingest_status == "running" or st.session_state.query_status == "running"
+ingest_disabled = st.session_state.ingest_status == "running" or st.session_state.streaming
 uploaded_file = st.file_uploader(
     "Select PDF",
     type=["pdf"],
@@ -349,9 +322,54 @@ with st.container():
             with st.chat_message("user"):
                 st.write(st.session_state.pending_question)
 
-        if st.session_state.query_status == "running":
+        if st.session_state.streaming:
             with st.chat_message("assistant"):
-                st.write("⏳ Thinking...")
+                _q = st.session_state.pending_question
+                _hist = st.session_state.stream_history
+                _placeholder = st.empty()
+                _placeholder.markdown("⏳ _Thinking..._")
+                _parts: list[str] = []
+
+                with requests.post(
+                    f"{API_BASE}/query/stream",
+                    json={"question": _q, "top_k": 5, "history": _hist},
+                    stream=True,
+                    timeout=600,
+                ) as _resp:
+                    for _line in _resp.iter_lines():
+                        if not _line:
+                            continue
+                        if _line.startswith(b"data: "):
+                            _data = json.loads(_line[6:])
+                            if "token" in _data:
+                                _parts.append(_data["token"])
+                                _placeholder.markdown("".join(_parts) + " ▌")
+                            elif _data.get("done"):
+                                st.session_state.stream_result = {
+                                    "sources": _data.get("sources", []),
+                                    "rewrites": _data.get("rewrites", 0),
+                                }
+
+                _full = "".join(_parts)
+                _placeholder.markdown(_full)
+                _res = st.session_state.get("stream_result", {})
+                if _res.get("rewrites", 0) > 0:
+                    st.caption(f"🔄 Query rewritten {_res['rewrites']}x")
+                if _res.get("sources"):
+                    with st.expander("Sources"):
+                        for _src in _res["sources"]:
+                            st.write(f"- {_src}")
+
+            st.session_state.chat_history.append({
+                "question": st.session_state.pending_question,
+                "answer": _full,
+                "sources": st.session_state.stream_result.get("sources", []),
+                "rewrites": st.session_state.stream_result.get("rewrites", 0),
+            })
+            st.session_state.pending_question = None
+            st.session_state.streaming = False
+            st.session_state.stream_result = {}
+            st.rerun()
 
 
     input_key = f"user_query_{st.session_state.input_key_tracker}"
@@ -362,20 +380,17 @@ with st.container():
         with cols[0]:
             question = st.text_input(
                 "Question",
-                disabled=st.session_state.query_status == "running" or st.session_state.ingest_status == "running",
+                disabled=st.session_state.streaming or st.session_state.ingest_status == "running",
                 placeholder="Ask something about your documents...",
                 key=input_key,
                 label_visibility="collapsed"
             )
 
         with cols[1]:
-            submit_btn = st.form_submit_button("▲", use_container_width=True, disabled=st.session_state.query_status == "running" or st.session_state.ingest_status == "running")
+            submit_btn = st.form_submit_button("▲", use_container_width=True, disabled=st.session_state.streaming or st.session_state.ingest_status == "running")
 
 
-_poll_query()
-
-
-_is_busy = st.session_state.query_status == "running" or st.session_state.ingest_status == "running"
+_is_busy = st.session_state.streaming or st.session_state.ingest_status == "running"
 if submit_btn and question and question.strip() and not _is_busy:
     history = [
         msg
@@ -385,18 +400,8 @@ if submit_btn and question and question.strip() and not _is_busy:
             {"role": "assistant", "content": h["answer"]},
         ]
     ]
-    try:
-        resp = requests.post(
-            f"{API_BASE}/query",
-            json={"question": question, "top_k": 5, "history": history},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        st.session_state.query_job_id = data["job_id"]
-        st.session_state.query_status = "running"
-        st.session_state.pending_question = question
-        st.session_state.input_key_tracker += 1
-    except Exception as e:
-        st.error(f"Failed to start query: {e}")
+    st.session_state.pending_question = question
+    st.session_state.streaming = True
+    st.session_state.stream_history = history
+    st.session_state.input_key_tracker += 1
     st.rerun()

@@ -1,8 +1,10 @@
+import json
 import logging
 import uuid
 import asyncio
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
@@ -61,43 +63,6 @@ async def _run_ingest(job_id: str, pdf_path: str, source_id: str, source_name: s
         logger.error(f"Ingest job {job_id} failed: {e}")
 
 
-async def _run_query(job_id: str, question: str, top_k: int, history: list[dict] | None = None, thread_id: str | None = None):
-    try:
-        config = {"configurable": {"thread_id": thread_id or job_id}}
-        result = await asyncio.to_thread(
-            query_graph.invoke,
-            {
-                "question": question,
-                "original_question": question,
-                "top_k": top_k,
-                "history": history or [],
-                "contexts": [],
-                "sources": [],
-                "relevant_contexts": [],
-                "relevant_sources": [],
-                "answer": "",
-                "rewrite_count": 0,
-                "grounded": False,
-            },
-            config,
-        )
-        raw_sources = result.get("relevant_sources") or result.get("sources", [])
-        doc_names = {d["doc_id"]: d["source_name"] for d in list_documents()}
-        named_sources = [doc_names.get(s, s) for s in raw_sources]
-        answer_data = {
-            "answer": result["answer"],
-            "sources": named_sources,
-            "num_contexts": len(result.get("relevant_contexts") or result.get("contexts", [])),
-            "grounded": result.get("grounded", True),
-            "rewrites": result.get("rewrite_count", 0),
-        }
-        set_job_status(job_id, "completed", answer_data)
-        save_chat_message(question, result["answer"], answer_data["sources"])
-    except Exception as e:
-        set_job_status(job_id, "failed", error=str(e))
-        logger.error(f"Query job {job_id} failed: {e}")
-
-
 # --- Endpoints ---
 
 @app.post("/ingest")
@@ -110,12 +75,64 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running"}
 
 
-@app.post("/query")
-async def query(req: QueryRequest, background_tasks: BackgroundTasks):
+
+@app.post("/query/stream")
+async def query_stream(req: QueryRequest):
     job_id = str(uuid.uuid4())
     create_job(job_id, "query", {"question": req.question, "top_k": req.top_k})
-    background_tasks.add_task(_run_query, job_id, req.question, req.top_k, req.history)
-    return {"job_id": job_id, "status": "running"}
+
+    async def event_stream():
+        try:
+            yield f"data: {json.dumps({'thinking': True, 'job_id': job_id})}\n\n"
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}}
+            initial_state = {
+                "question": req.question,
+                "original_question": req.question,
+                "top_k": req.top_k,
+                "history": req.history or [],
+                "contexts": [],
+                "sources": [],
+                "relevant_contexts": [],
+                "relevant_sources": [],
+                "answer": "",
+                "rewrite_count": 0,
+                "grounded": False,
+            }
+            full_answer: list[str] = []
+            meta: dict = {}
+            async for event in query_graph.astream_events(initial_state, config, version="v2"):
+                kind = event["event"]
+                name = event.get("name", "")
+                if kind == "on_custom_event" and name == "token":
+                    token = event["data"]
+                    full_answer.append(token)
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+                elif kind == "on_custom_event" and name == "final_meta":
+                    meta = event["data"]
+
+            raw_sources = meta.get("sources", [])
+            doc_names = {d["doc_id"]: d["source_name"] for d in list_documents()}
+            named_sources = [doc_names.get(s, s) for s in raw_sources]
+            answer_text = "".join(full_answer)
+            answer_data = {
+                "answer": answer_text,
+                "sources": named_sources,
+                "rewrites": meta.get("rewrite_count", 0),
+            }
+            set_job_status(job_id, "completed", answer_data)
+            yield f"data: {json.dumps({'done': True, 'sources': named_sources, 'rewrites': meta.get('rewrite_count', 0)})}\n\n"
+            save_chat_message(req.question, answer_text, named_sources)
+        except Exception as e:
+            set_job_status(job_id, "failed", error=str(e))
+            logger.error(f"Stream query job {job_id} failed: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/jobs/{job_id}")
@@ -149,9 +166,6 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
     if job["name"] == "ingest":
         p = job["params"]
         background_tasks.add_task(_run_ingest, job_id, p["pdf_path"], p["source_id"], p.get("source_name", p["source_id"]), retry_thread_id)
-    elif job["name"] == "query":
-        p = job["params"]
-        background_tasks.add_task(_run_query, job_id, p["question"], p["top_k"], None, retry_thread_id)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown job type '{job['name']}'")
 
