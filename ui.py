@@ -294,7 +294,7 @@ with st.container():
                 meta_parts = []
                 if msg.get("rewrites", 0) > 0:
                     meta_parts.append(f"🔄 Query rewritten {msg['rewrites']}x")
-if meta_parts:
+                if meta_parts:
                     st.caption(" · ".join(meta_parts))
                 if msg.get("sources"):
                     with st.expander("Sources"):
