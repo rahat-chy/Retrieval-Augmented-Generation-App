@@ -16,4 +16,5 @@ dependencies = [
     "streamlit>=1.57.0",
     "uvicorn>=0.46.0",
     "llama-index-embeddings-huggingface>=0.7.0",
+    "langgraph>=1.2.0",
 ]

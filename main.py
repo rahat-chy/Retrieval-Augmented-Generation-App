@@ -1,21 +1,27 @@
 import logging
 import uuid
-import os
+import asyncio
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import ollama
+from langgraph.checkpoint.memory import MemorySaver
 
-from data_loader import load_and_chunk_pdf, embed_texts
-from vector_db import QdrantStorage
-from custom_types import RAGChunkAndSrc, RAGUpsertResult, RAGSearchResult
-from job_runner import init_db, create_job, run_step, set_job_status, get_job, reset_job_for_retry, save_chat_message, get_chat_history
+from graphs.ingest_graph import build_ingest_graph
+from graphs.query_graph import build_query_graph
+from job_runner import (
+    init_db, create_job, set_job_status, get_job,
+    reset_job_for_retry, save_chat_message, get_chat_history,
+)
 
 load_dotenv()
 
 logger = logging.getLogger("uvicorn")
 app = FastAPI()
+
+_checkpointer = MemorySaver()
+ingest_graph = build_ingest_graph(_checkpointer)
+query_graph = build_query_graph(_checkpointer)
 
 
 @app.on_event("startup")
@@ -38,62 +44,49 @@ class QueryRequest(BaseModel):
 
 # --- Pipelines ---
 
-async def _run_ingest(job_id: str, pdf_path: str, source_id: str):
+async def _run_ingest(job_id: str, pdf_path: str, source_id: str, thread_id: str | None = None):
     try:
-        def _load():
-            chunks = load_and_chunk_pdf(pdf_path)
-            return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
-
-        chunks_and_src = await run_step(job_id, "load-and-chunk", _load, output_type=RAGChunkAndSrc)
-
-        def _upsert():
-            chunks = chunks_and_src.chunks
-            vecs = embed_texts([c["text"] for c in chunks])
-            ids = [c["id"] for c in chunks]
-            payload = [
-                {"source": chunks_and_src.source_id, "text": c["text"], "parent_text": c["parent_text"]}
-                for c in chunks
-            ]
-            QdrantStorage().upsert(ids, vecs, payload)
-            return RAGUpsertResult(ingested=len(chunks))
-
-        result = await run_step(job_id, "embed-and-upsert", _upsert, output_type=RAGUpsertResult)
-        set_job_status(job_id, "completed", result.model_dump())
+        config = {"configurable": {"thread_id": thread_id or job_id}}
+        result = await asyncio.to_thread(
+            ingest_graph.invoke,
+            {"pdf_path": pdf_path, "source_id": source_id, "chunks": [], "ingested": 0},
+            config,
+        )
+        set_job_status(job_id, "completed", {"ingested": result["ingested"]})
     except Exception as e:
         set_job_status(job_id, "failed", error=str(e))
         logger.error(f"Ingest job {job_id} failed: {e}")
 
 
-async def _run_query(job_id: str, question: str, top_k: int, history: list[dict] | None = None):
+async def _run_query(job_id: str, question: str, top_k: int, history: list[dict] | None = None, thread_id: str | None = None):
     try:
-        def _search():
-            query_vec = embed_texts([question])[0]
-            store = QdrantStorage()
-            found = store.search(query_vec, top_k)
-            return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
-
-        found = await run_step(job_id, "embed-and-search", _search, output_type=RAGSearchResult)
-
-        def _llm_answer():
-            context_block = "\n\n".join(f"- {c}" for c in found.contexts)
-            prompt = (
-                "Use the following context to answer the question.\n\n"
-                f"Context:\n{context_block}\n\n"
-                f"Question: {question}\n"
-                "Answer concisely using the context above."
-            )
-            messages = [
-                {"role": "system", "content": "You answer questions using only the provided context."},
-                *(history or []),
-                {"role": "user", "content": prompt},
-            ]
-            res = ollama.chat(model="llama3.2", messages=messages)
-            answer = res["message"]["content"].strip()
-            return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
-
-        result = await run_step(job_id, "llm-answer", _llm_answer)
-        set_job_status(job_id, "completed", result)
-        save_chat_message(question, result["answer"], result.get("sources", []))
+        config = {"configurable": {"thread_id": thread_id or job_id}}
+        result = await asyncio.to_thread(
+            query_graph.invoke,
+            {
+                "question": question,
+                "original_question": question,
+                "top_k": top_k,
+                "history": history or [],
+                "contexts": [],
+                "sources": [],
+                "relevant_contexts": [],
+                "relevant_sources": [],
+                "answer": "",
+                "rewrite_count": 0,
+                "grounded": False,
+            },
+            config,
+        )
+        answer_data = {
+            "answer": result["answer"],
+            "sources": result.get("relevant_sources") or result.get("sources", []),
+            "num_contexts": len(result.get("relevant_contexts") or result.get("contexts", [])),
+            "grounded": result.get("grounded", True),
+            "rewrites": result.get("rewrite_count", 0),
+        }
+        set_job_status(job_id, "completed", answer_data)
+        save_chat_message(question, result["answer"], answer_data["sources"])
     except Exception as e:
         set_job_status(job_id, "failed", error=str(e))
         logger.error(f"Query job {job_id} failed: {e}")
@@ -143,12 +136,15 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
 
     reset_job_for_retry(job_id)
 
+    # Retry uses a fresh thread_id so LangGraph runs from scratch
+    retry_thread_id = str(uuid.uuid4())
+
     if job["name"] == "ingest":
         p = job["params"]
-        background_tasks.add_task(_run_ingest, job_id, p["pdf_path"], p["source_id"])
+        background_tasks.add_task(_run_ingest, job_id, p["pdf_path"], p["source_id"], retry_thread_id)
     elif job["name"] == "query":
         p = job["params"]
-        background_tasks.add_task(_run_query, job_id, p["question"], p["top_k"])
+        background_tasks.add_task(_run_query, job_id, p["question"], p["top_k"], None, retry_thread_id)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown job type '{job['name']}'")
 

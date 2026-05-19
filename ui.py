@@ -107,6 +107,8 @@ _defaults = {
     "ingest_result": None,
     "ingest_last_msg": None,
     "ingest_tmp_path": None,
+    "ingest_failed_job_id": None,
+    "ingest_failed_source_id": None,
     "query_job_id": None,
     "query_status": None,
     "pending_question": None,
@@ -148,6 +150,8 @@ def _poll_ingest():
         st.rerun()
     elif job["status"] == "failed":
         err = job.get("error", "unknown error")
+        st.session_state.ingest_failed_job_id = st.session_state.ingest_job_id
+        st.session_state.ingest_failed_source_id = (job.get("params") or {}).get("source_id")
         st.session_state.ingest_last_msg = ("error", f"Ingest failed: {err}")
         st.session_state.ingest_status = None
         st.session_state.ingest_job_id = None
@@ -172,6 +176,7 @@ def _poll_query():
             "question": st.session_state.pending_question,
             "answer": result.get("answer", ""),
             "sources": result.get("sources", []),
+            "rewrites": result.get("rewrites", 0),
         })
         st.session_state.query_status = None
         st.session_state.query_job_id = None
@@ -213,27 +218,52 @@ uploaded_file = st.file_uploader(
     label_visibility="collapsed",
 )
 
-if st.button("Ingest", disabled=ingest_disabled or uploaded_file is None):
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.write(uploaded_file.getvalue())
-    tmp.close()
-    st.session_state.ingest_tmp_path = tmp.name
+same_file = (
+    uploaded_file is not None
+    and uploaded_file.name == st.session_state.ingest_failed_source_id
+)
+retry_disabled = ingest_disabled or not st.session_state.ingest_failed_job_id or not same_file
 
-    try:
-        resp = requests.post(
-            f"{API_BASE}/ingest",
-            json={"pdf_path": tmp.name, "source_id": uploaded_file.name},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        st.session_state.ingest_job_id = data["job_id"]
-        st.session_state.ingest_status = "running"
-    except Exception as e:
-        st.error(f"Failed to start ingest: {e}")
-        os.unlink(tmp.name)
+col_ingest, col_retry = st.columns(2)
 
-    st.rerun()
+with col_ingest:
+    if st.button("Ingest", disabled=ingest_disabled or uploaded_file is None, use_container_width=True):
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.write(uploaded_file.getvalue())
+        tmp.close()
+        st.session_state.ingest_tmp_path = tmp.name
+
+        try:
+            resp = requests.post(
+                f"{API_BASE}/ingest",
+                json={"pdf_path": tmp.name, "source_id": uploaded_file.name},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            st.session_state.ingest_job_id = data["job_id"]
+            st.session_state.ingest_status = "running"
+        except Exception as e:
+            st.error(f"Failed to start ingest: {e}")
+            os.unlink(tmp.name)
+
+        st.rerun()
+
+with col_retry:
+    if st.button("Retry Ingest", disabled=retry_disabled, use_container_width=True):
+        try:
+            resp = requests.post(
+                f"{API_BASE}/jobs/{st.session_state.ingest_failed_job_id}/retry",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            st.session_state.ingest_job_id = data["job_id"]
+            st.session_state.ingest_status = "running"
+            st.session_state.ingest_last_msg = None
+        except Exception as e:
+            st.error(f"Retry failed: {e}")
+        st.rerun()
 
 if st.session_state.ingest_status == "running":
     st.info("⏳ Ingesting...")
@@ -261,6 +291,11 @@ with st.container():
                 st.write(msg["question"])
             with st.chat_message("assistant"):
                 st.write(msg["answer"])
+                meta_parts = []
+                if msg.get("rewrites", 0) > 0:
+                    meta_parts.append(f"🔄 Query rewritten {msg['rewrites']}x")
+if meta_parts:
+                    st.caption(" · ".join(meta_parts))
                 if msg.get("sources"):
                     with st.expander("Sources"):
                         for src in msg["sources"]:
