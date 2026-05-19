@@ -115,6 +115,9 @@ _defaults = {
     "history_loaded": False,
     "chat_history": [],
     "input_key_tracker": 0,
+    "uploader_key": 0,
+    "documents": [],
+    "documents_loaded": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -140,6 +143,8 @@ def _poll_ingest():
         st.session_state.ingest_last_msg = ("success", f"Ingested {ingested} chunks.")
         st.session_state.ingest_status = None
         st.session_state.ingest_job_id = None
+        st.session_state.uploader_key += 1
+        st.session_state.documents_loaded = False
         tmp_path = st.session_state.ingest_tmp_path
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -216,6 +221,7 @@ uploaded_file = st.file_uploader(
     type=["pdf"],
     disabled=ingest_disabled,
     label_visibility="collapsed",
+    key=f"file_uploader_{st.session_state.uploader_key}",
 )
 
 same_file = (
@@ -276,6 +282,44 @@ if st.session_state.ingest_last_msg:
         st.success(msg)
     else:
         st.error(msg)
+
+
+# ── Documents ────────────────────────────────────────────────────────────────
+
+st.divider()
+st.header("Ingested Documents")
+
+if not st.session_state.documents_loaded:
+    try:
+        resp = requests.get(f"{API_BASE}/documents", timeout=5)
+        resp.raise_for_status()
+        st.session_state.documents = resp.json()
+        st.session_state.documents_loaded = True
+    except Exception:
+        pass
+
+if not st.session_state.documents:
+    st.caption("No documents ingested yet.")
+else:
+    header_cols = st.columns([5, 2, 2, 1])
+    header_cols[0].caption("**Name**")
+    header_cols[1].caption("**Chunks**")
+    header_cols[2].caption("**Ingested**")
+    for doc in st.session_state.documents:
+        cols = st.columns([5, 2, 2, 1])
+        cols[0].write(doc["source_name"])
+        cols[1].write(str(doc["chunk_count"]))
+        ingested_date = doc["ingested_at"][:10] if doc.get("ingested_at") else "—"
+        cols[2].write(ingested_date)
+        with cols[3]:
+            if st.button("🗑", key=f"del_{doc['doc_id']}", help="Delete document"):
+                try:
+                    del_resp = requests.delete(f"{API_BASE}/documents/{doc['doc_id']}", timeout=10)
+                    del_resp.raise_for_status()
+                    st.session_state.documents_loaded = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
 
 
 # ── Chat ─────────────────────────────────────────────────────────────────────

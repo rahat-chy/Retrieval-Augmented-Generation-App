@@ -37,6 +37,14 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                doc_id TEXT PRIMARY KEY,
+                source_name TEXT NOT NULL,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                ingested_at TEXT NOT NULL
+            )
+        """)
 
 
 def create_job(job_id: str, name: str, params: Optional[dict] = None):
@@ -108,3 +116,31 @@ def get_chat_history() -> list[dict]:
         }
         for r in rows
     ]
+
+
+def register_document(doc_id: str, source_name: str, chunk_count: int):
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO documents (doc_id, source_name, chunk_count, ingested_at) VALUES (?, ?, ?, ?)",
+            (doc_id, source_name, chunk_count, now),
+        )
+
+
+def list_documents() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM documents ORDER BY ingested_at DESC").fetchall()
+    return [
+        {
+            "doc_id": r["doc_id"],
+            "source_name": r["source_name"],
+            "chunk_count": r["chunk_count"],
+            "ingested_at": r["ingested_at"],
+        }
+        for r in rows
+    ]
+
+
+def delete_document(doc_id: str):
+    with _conn() as c:
+        c.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
