@@ -30,6 +30,7 @@ query_graph = build_query_graph(_checkpointer)
 
 @app.on_event("startup")
 async def startup():
+    """Initialize the SQLite job database on app startup."""
     init_db()
 
 
@@ -49,6 +50,7 @@ class QueryRequest(BaseModel):
 # --- Pipelines ---
 
 async def _run_ingest(job_id: str, pdf_path: str, source_id: str, source_name: str, thread_id: str | None = None):
+    """Run the ingest LangGraph in a thread, update job status, and register the document on success."""
     try:
         config = {"configurable": {"thread_id": thread_id or job_id}}
         result = await asyncio.to_thread(
@@ -67,6 +69,7 @@ async def _run_ingest(job_id: str, pdf_path: str, source_id: str, source_name: s
 
 @app.post("/ingest")
 async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
+    """Create an ingest job and start the ingest pipeline in the background."""
     job_id = str(uuid.uuid4())
     doc_id = str(uuid.uuid4())
     source_name = req.source_id or req.pdf_path
@@ -78,6 +81,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
 
 @app.post("/query/stream")
 async def query_stream(req: QueryRequest):
+    """Stream query tokens and status events via SSE, then persist the exchange to chat history."""
     job_id = str(uuid.uuid4())
     create_job(job_id, "query", {"question": req.question, "top_k": req.top_k})
 
@@ -142,6 +146,7 @@ async def query_stream(req: QueryRequest):
 
 @app.get("/jobs/{job_id}")
 async def job_status(job_id: str):
+    """Return current status, params, and result for a job; 404 if not found."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -150,11 +155,13 @@ async def job_status(job_id: str):
 
 @app.get("/history")
 async def history():
+    """Return all stored chat messages in chronological order."""
     return get_chat_history()
 
 
 @app.post("/jobs/{job_id}/retry")
 async def retry_job(job_id: str, background_tasks: BackgroundTasks):
+    """Reset a failed job and re-run its pipeline with a fresh LangGraph thread ID."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -179,11 +186,13 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
 
 @app.get("/documents")
 async def get_documents():
+    """Return all registered documents ordered by most recent ingestion."""
     return list_documents()
 
 
 @app.delete("/documents/{doc_id}")
 async def delete_doc(doc_id: str):
+    """Delete a document's vectors from Qdrant and its metadata record from the DB."""
     QdrantStorage().delete_by_source(doc_id)
     delete_document(doc_id)
     return {"deleted": doc_id}

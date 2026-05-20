@@ -17,6 +17,7 @@ _llama_embed = HuggingFaceEmbedding(model_name=EMBED_MODEL)
 
 
 def _describe_image(image_bytes: bytes, ext: str) -> str:
+    """Send image bytes to llava via ollama and return a concise description."""
     response = ollama.chat(
         model="llava",
         messages=[{
@@ -32,6 +33,7 @@ def _describe_image(image_bytes: bytes, ext: str) -> str:
 
 
 def extract_image_descriptions(path: str) -> list[str]:
+    """Extract and describe non-decorative images from a PDF using llava; skip images under 100x100px."""
     doc = fitz.open(path)
     descriptions = []
     seen_xrefs: set[int] = set()
@@ -60,6 +62,7 @@ def extract_image_descriptions(path: str) -> list[str]:
 
 
 def _find_page(text: str, full_text: str, page_starts: list[int], page_nums: list[int]) -> int:
+    """Map a text snippet back to its 1-based page number using precomputed character offsets."""
     sample = text[:80].strip()
     if not sample or not page_starts:
         return 1
@@ -71,7 +74,7 @@ def _find_page(text: str, full_text: str, page_starts: list[int], page_nums: lis
 
 
 def load_and_chunk_pdf(path: str) -> list[dict]:
-    """Returns child chunks: [{id, text, parent_text, page_num}]"""
+    """Load a PDF, extract image descriptions, semantically chunk the text, and return child chunks with parent context."""
     docs = PDFReader().load_data(file=path)
 
     page_starts: list[int] = []
@@ -117,4 +120,5 @@ def load_and_chunk_pdf(path: str) -> list[dict]:
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Encode a list of texts into 384-dim float vectors using all-MiniLM-L6-v2."""
     return _embed_model.encode(texts, convert_to_numpy=True).tolist()

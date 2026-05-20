@@ -128,6 +128,7 @@ for k, v in _defaults.items():
 
 
 def _render_source_refs(refs: list[dict]):
+    """Render source reference cards with matched excerpt and full context expanders."""
     all_chunks = []
     for ref in refs:
         all_chunks.append(ref)
@@ -146,6 +147,7 @@ def _render_source_refs(refs: list[dict]):
 
 
 def _get_job(job_id: str) -> dict:
+    """Fetch job status from the API; return a failed-status dict on network or HTTP error."""
     try:
         resp = requests.get(f"{API_BASE}/jobs/{job_id}", timeout=10)
         resp.raise_for_status()
@@ -156,6 +158,7 @@ def _get_job(job_id: str) -> dict:
 
 @st.fragment(run_every=2)
 def _poll_ingest():
+    """Streamlit fragment that polls the ingest job every 2 seconds and updates session state on completion or failure."""
     if st.session_state.ingest_status != "running":
         return
     job = _get_job(st.session_state.ingest_job_id)

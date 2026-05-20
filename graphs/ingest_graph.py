@@ -7,11 +7,13 @@ from vector_db import QdrantStorage
 
 
 def load_and_chunk_node(state: IngestState) -> dict:
+    """LangGraph node: load the PDF and split it into semantic child chunks."""
     chunks = load_and_chunk_pdf(state["pdf_path"])
     return {"chunks": chunks}
 
 
 def embed_and_upsert_node(state: IngestState) -> dict:
+    """LangGraph node: embed all chunks and upsert their vectors and payloads into Qdrant."""
     chunks = state["chunks"]
     vecs = embed_texts([c["text"] for c in chunks])
     ids = [c["id"] for c in chunks]
@@ -29,6 +31,7 @@ def embed_and_upsert_node(state: IngestState) -> dict:
 
 
 def build_ingest_graph(checkpointer: MemorySaver):
+    """Build and compile the two-node ingest graph (load+chunk → embed+upsert) with checkpointing."""
     g = StateGraph(IngestState)
     g.add_node("load_and_chunk", load_and_chunk_node)
     g.add_node("embed_and_upsert", embed_and_upsert_node)

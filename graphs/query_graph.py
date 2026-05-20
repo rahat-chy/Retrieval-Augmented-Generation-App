@@ -13,6 +13,7 @@ _client = ollama.AsyncClient()
 
 
 async def classify_intent_node(state: QueryState) -> dict:
+    """LangGraph node: classify the question as 'rag' or 'chitchat' using llama3.2."""
     await adispatch_custom_event("status", "Classifying intent...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
@@ -29,10 +30,12 @@ async def classify_intent_node(state: QueryState) -> dict:
 
 
 def route_after_classify(state: QueryState) -> str:
+    """Route to 'chitchat' or 'rag' branch based on classified intent."""
     return state.get("intent", "rag")
 
 
 async def chitchat_node(state: QueryState) -> dict:
+    """LangGraph node: handle small talk with streaming tokens; skips document retrieval."""
     messages = [
         {"role": "system", "content": "You are a helpful assistant. Reply conversationally."},
         *(state.get("history") or []),
@@ -52,6 +55,7 @@ async def chitchat_node(state: QueryState) -> dict:
 
 
 async def retrieve_node(state: QueryState) -> dict:
+    """LangGraph node: embed the current question and search Qdrant for top-k contexts."""
     await adispatch_custom_event("status", "Searching documents...")
     query_vec = (await asyncio.to_thread(embed_texts, [state["question"]]))[0]
     result = QdrantStorage().search(query_vec, state.get("top_k", 5))
@@ -59,10 +63,12 @@ async def retrieve_node(state: QueryState) -> dict:
 
 
 async def grade_docs_node(state: QueryState) -> dict:
+    """LangGraph node: grade all retrieved chunks for relevance in parallel using llama3.2."""
     await adispatch_custom_event("status", f"Grading {len(state['contexts'])} chunks...")
     question = state.get("original_question", state["question"])
 
     async def _grade(ctx: str) -> bool:
+        """Ask llama3.2 whether a context chunk is relevant to the original question."""
         resp = await _client.chat(model="llama3.2", messages=[{
             "role": "user",
             "content": (
@@ -82,12 +88,14 @@ async def grade_docs_node(state: QueryState) -> dict:
 
 
 def route_after_grading(state: QueryState) -> str:
+    """Route to 'rewrite' if no relevant docs remain and rewrites aren't exhausted, else 'generate'."""
     if not state.get("relevant_contexts") and state.get("rewrite_count", 0) < MAX_REWRITES:
         return "rewrite"
     return "generate"
 
 
 async def rewrite_query_node(state: QueryState) -> dict:
+    """LangGraph node: rewrite the current question using llama3.2 to improve retrieval."""
     await adispatch_custom_event("status", f"Rewriting query (attempt {state.get('rewrite_count', 0) + 1})...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
@@ -105,6 +113,7 @@ async def rewrite_query_node(state: QueryState) -> dict:
 
 
 async def generate_node(state: QueryState) -> dict:
+    """LangGraph node: generate a grounded answer from relevant contexts with streaming tokens."""
     await adispatch_custom_event("status", "Generating answer...")
     contexts = state.get("relevant_contexts") or state.get("contexts", [])
     source_refs = state.get("source_refs", [])
@@ -140,6 +149,7 @@ async def generate_node(state: QueryState) -> dict:
 
 
 def build_query_graph(checkpointer: MemorySaver):
+    """Build and compile the multi-node query graph with intent routing, grading, and rewrite loops."""
     g = StateGraph(QueryState)
     g.add_node("classify_intent", classify_intent_node)
     g.add_node("chitchat", chitchat_node)

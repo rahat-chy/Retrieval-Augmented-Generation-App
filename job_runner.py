@@ -9,12 +9,14 @@ DB_PATH = "jobs.db"
 
 
 def _conn():
+    """Return a sqlite3 connection to jobs.db with Row factory enabled."""
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     return c
 
 
 def init_db():
+    """Create jobs, chat_history, and documents tables if they don't exist; run additive migrations."""
     with _conn() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -53,6 +55,7 @@ def init_db():
 
 
 def create_job(job_id: str, name: str, params: Optional[dict] = None):
+    """Insert a new job row in 'running' status with serialized params."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -62,6 +65,7 @@ def create_job(job_id: str, name: str, params: Optional[dict] = None):
 
 
 def reset_job_for_retry(job_id: str):
+    """Clear error and result on a failed job and reset its status to 'running'."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -71,6 +75,7 @@ def reset_job_for_retry(job_id: str):
 
 
 def set_job_status(job_id: str, status: str, result=None, error: Optional[str] = None):
+    """Update a job's status, serialized result, and error message."""
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET status=?, result_json=?, error=?, updated_at=? WHERE id=?",
@@ -85,6 +90,7 @@ def set_job_status(job_id: str, status: str, result=None, error: Optional[str] =
 
 
 def get_job(job_id: str) -> Optional[dict]:
+    """Fetch a job by ID and return it as a plain dict, or None if not found."""
     with _conn() as c:
         row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not row:
@@ -102,6 +108,7 @@ def get_job(job_id: str) -> Optional[dict]:
 
 
 def save_chat_message(question: str, answer: str, sources: list[str], source_refs: list[dict] | None = None):
+    """Persist a question/answer exchange with source names and detailed refs to chat_history."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -111,6 +118,7 @@ def save_chat_message(question: str, answer: str, sources: list[str], source_ref
 
 
 def get_chat_history() -> list[dict]:
+    """Return all chat history rows ordered by insertion ID, with JSON fields deserialized."""
     with _conn() as c:
         rows = c.execute("SELECT * FROM chat_history ORDER BY id").fetchall()
     return [
@@ -125,6 +133,7 @@ def get_chat_history() -> list[dict]:
 
 
 def register_document(doc_id: str, source_name: str, chunk_count: int):
+    """Upsert a document record with its display name, chunk count, and ingestion timestamp."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -134,6 +143,7 @@ def register_document(doc_id: str, source_name: str, chunk_count: int):
 
 
 def list_documents() -> list[dict]:
+    """Return all registered documents ordered by most recent ingestion first."""
     with _conn() as c:
         rows = c.execute("SELECT * FROM documents ORDER BY ingested_at DESC").fetchall()
     return [
@@ -148,5 +158,6 @@ def list_documents() -> list[dict]:
 
 
 def delete_document(doc_id: str):
+    """Remove a document record from the documents table by its UUID."""
     with _conn() as c:
         c.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))

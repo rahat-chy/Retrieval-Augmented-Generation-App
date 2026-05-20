@@ -2,6 +2,7 @@ from typing import TypedDict
 
 
 class IngestState(TypedDict):
+    """LangGraph state passed between nodes in the ingest pipeline."""
     pdf_path: str
     source_id: str
     chunks: list[dict]
@@ -9,6 +10,7 @@ class IngestState(TypedDict):
 
 
 class QueryState(TypedDict):
+    """LangGraph state passed between nodes in the query pipeline."""
     question: str
     original_question: str
     top_k: int
