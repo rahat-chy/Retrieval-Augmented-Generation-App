@@ -16,7 +16,12 @@ def embed_and_upsert_node(state: IngestState) -> dict:
     vecs = embed_texts([c["text"] for c in chunks])
     ids = [c["id"] for c in chunks]
     payload = [
-        {"source": state["source_id"], "text": c["text"], "parent_text": c["parent_text"]}
+        {
+            "source": state["source_id"],
+            "text": c["text"],
+            "parent_text": c["parent_text"],
+            "page_num": c.get("page_num", 1),
+        }
         for c in chunks
     ]
     QdrantStorage().upsert(ids, vecs, payload)

@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import uuid
 import requests
 import streamlit as st
 
@@ -124,6 +125,24 @@ _defaults = {
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+
+def _render_source_refs(refs: list[dict]):
+    all_chunks = []
+    for ref in refs:
+        all_chunks.append(ref)
+        all_chunks.extend(ref.get("siblings", []))
+
+    for chunk in all_chunks:
+        st.markdown(f"**{chunk['source']}** · page {chunk['page_num']}")
+        excerpt = chunk.get("excerpt", "")
+        if excerpt:
+            st.caption("Matched chunk:")
+            st.text_area("", value=excerpt, height=120, disabled=True, key=uuid.uuid4().hex)
+        full_ctx = chunk.get("context_preview", "")
+        if full_ctx and full_ctx != excerpt:
+            with st.expander("Full context"):
+                st.text_area("", value=full_ctx, height=200, disabled=True, key=uuid.uuid4().hex)
 
 
 def _get_job(job_id: str) -> dict:
@@ -285,7 +304,7 @@ else:
         ingested_date = doc["ingested_at"][:10] if doc.get("ingested_at") else "—"
         cols[2].write(ingested_date)
         with cols[3]:
-            if st.button("🗑", key=f"del_{doc['doc_id']}", help="Delete document"):
+            if st.button("🗑", key=f"del_{doc['doc_id']}", help="Delete document", disabled=ingest_disabled):
                 try:
                     del_resp = requests.delete(f"{API_BASE}/documents/{doc['doc_id']}", timeout=10)
                     del_resp.raise_for_status()
@@ -313,7 +332,11 @@ with st.container():
                     meta_parts.append(f"🔄 Query rewritten {msg['rewrites']}x")
                 if meta_parts:
                     st.caption(" · ".join(meta_parts))
-                if msg.get("sources"):
+                source_refs = msg.get("source_refs", [])
+                if source_refs:
+                    with st.expander("Sources"):
+                        _render_source_refs(source_refs)
+                elif msg.get("sources"):
                     with st.expander("Sources"):
                         for src in msg["sources"]:
                             st.write(f"- {src}")
@@ -341,12 +364,15 @@ with st.container():
                             continue
                         if _line.startswith(b"data: "):
                             _data = json.loads(_line[6:])
-                            if "token" in _data:
+                            if "status" in _data:
+                                _placeholder.markdown(f"⏳ _{_data['status']}_")
+                            elif "token" in _data:
                                 _parts.append(_data["token"])
                                 _placeholder.markdown("".join(_parts) + " ▌")
                             elif _data.get("done"):
                                 st.session_state.stream_result = {
                                     "sources": _data.get("sources", []),
+                                    "source_refs": _data.get("source_refs", []),
                                     "rewrites": _data.get("rewrites", 0),
                                 }
 
@@ -355,7 +381,11 @@ with st.container():
                 _res = st.session_state.get("stream_result", {})
                 if _res.get("rewrites", 0) > 0:
                     st.caption(f"🔄 Query rewritten {_res['rewrites']}x")
-                if _res.get("sources"):
+                _source_refs = _res.get("source_refs", [])
+                if _source_refs:
+                    with st.expander("Sources"):
+                        _render_source_refs(_source_refs)
+                elif _res.get("sources"):
                     with st.expander("Sources"):
                         for _src in _res["sources"]:
                             st.write(f"- {_src}")
@@ -364,6 +394,7 @@ with st.container():
                 "question": st.session_state.pending_question,
                 "answer": _full,
                 "sources": st.session_state.stream_result.get("sources", []),
+                "source_refs": st.session_state.stream_result.get("source_refs", []),
                 "rewrites": st.session_state.stream_result.get("rewrites", 0),
             })
             st.session_state.pending_question = None

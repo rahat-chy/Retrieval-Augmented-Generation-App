@@ -1,3 +1,4 @@
+import bisect
 import uuid
 import fitz  # pymupdf
 import ollama
@@ -58,15 +59,35 @@ def extract_image_descriptions(path: str) -> list[str]:
     return descriptions
 
 
-def load_and_chunk_pdf(path: str) -> list[dict]:
-    """
-    Returns child chunks: [{id, text, parent_text}]
+def _find_page(text: str, full_text: str, page_starts: list[int], page_nums: list[int]) -> int:
+    sample = text[:80].strip()
+    if not sample or not page_starts:
+        return 1
+    pos = full_text.find(sample)
+    if pos == -1:
+        return page_nums[0]
+    idx = bisect.bisect_right(page_starts, pos) - 1
+    return page_nums[max(0, idx)]
 
-    Image descriptions are appended to full text before splitting so they land
-    near topically similar content rather than isolated at the end.
-    """
+
+def load_and_chunk_pdf(path: str) -> list[dict]:
+    """Returns child chunks: [{id, text, parent_text, page_num}]"""
     docs = PDFReader().load_data(file=path)
-    full_text = "\n\n".join(d.text for d in docs if getattr(d, "text", None))
+
+    page_starts: list[int] = []
+    page_nums: list[int] = []
+    parts: list[str] = []
+    pos = 0
+    for i, d in enumerate(docs):
+        text = getattr(d, "text", None)
+        if not text:
+            continue
+        page_starts.append(pos)
+        page_nums.append(i + 1)
+        parts.append(text)
+        pos += len(text) + 2  # "\n\n" separator
+
+    full_text = "\n\n".join(parts)
 
     img_descs = extract_image_descriptions(path)
     if img_descs:
@@ -84,10 +105,12 @@ def load_and_chunk_pdf(path: str) -> list[dict]:
         parent_text = "\n\n".join(n.get_content() for n in group)
 
         for node in group:
+            node_text = node.get_content()
             chunks.append({
                 "id": str(uuid.uuid4()),
-                "text": node.get_content(),
+                "text": node_text,
                 "parent_text": parent_text,
+                "page_num": _find_page(node_text, full_text, page_starts, page_nums),
             })
 
     return chunks

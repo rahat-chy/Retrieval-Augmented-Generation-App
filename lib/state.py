@@ -15,8 +15,7 @@ class QueryState(TypedDict):
     history: list[dict]
     intent: str  # "rag" or "chitchat"
     contexts: list[str]
-    sources: list[str]
+    source_refs: list[dict]          # [{source, page_num, excerpt}], parallel to contexts
     relevant_contexts: list[str]
-    relevant_sources: list[str]
     answer: str
     rewrite_count: int

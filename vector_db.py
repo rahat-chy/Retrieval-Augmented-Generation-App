@@ -27,20 +27,34 @@ class QdrantStorage:
             limit=top_k,
         ).points
         contexts = []
-        sources = set()
-        seen_parents: set[str] = set()
+        source_refs: list[dict] = []
+        seen_parents: dict[str, int] = {}  # parent_text -> index in source_refs
 
         for r in results:
             payload = getattr(r, "payload", None) or {}
-            # return parent_text for richer LLM context; dedup siblings sharing same parent
             context = payload.get("parent_text") or payload.get("text", "")
-            source = payload.get("source", "")
-            if context and context not in seen_parents:
+            child_ref = {
+                "source": payload.get("source", ""),
+                "page_num": payload.get("page_num", 1),
+                "excerpt": payload.get("text", ""),
+            }
+            if not context:
+                continue
+            if context not in seen_parents:
                 contexts.append(context)
-                seen_parents.add(context)
-                sources.add(source)
+                seen_parents[context] = len(source_refs)
+                source_refs.append({
+                    **child_ref,
+                    "context_preview": context,
+                    "siblings": [],
+                })
+            else:
+                source_refs[seen_parents[context]]["siblings"].append({
+                    **child_ref,
+                    "context_preview": context,
+                })
 
-        return {"contexts": contexts, "sources": list(sources)}
+        return {"contexts": contexts, "source_refs": source_refs}
 
     def delete_by_source(self, source_id: str):
         self.client.delete(

@@ -92,12 +92,10 @@ async def query_stream(req: QueryRequest):
                 "top_k": req.top_k,
                 "history": req.history or [],
                 "contexts": [],
-                "sources": [],
+                "source_refs": [],
                 "relevant_contexts": [],
-                "relevant_sources": [],
                 "answer": "",
                 "rewrite_count": 0,
-                "grounded": False,
             }
             full_answer: list[str] = []
             meta: dict = {}
@@ -108,21 +106,28 @@ async def query_stream(req: QueryRequest):
                     token = event["data"]
                     full_answer.append(token)
                     yield f"data: {json.dumps({'token': token})}\n\n"
+                elif kind == "on_custom_event" and name == "status":
+                    yield f"data: {json.dumps({'status': event['data']})}\n\n"
                 elif kind == "on_custom_event" and name == "final_meta":
                     meta = event["data"]
 
-            raw_sources = meta.get("sources", [])
+            raw_source_refs = meta.get("source_refs", [])
             doc_names = {d["doc_id"]: d["source_name"] for d in list_documents()}
-            named_sources = [doc_names.get(s, s) for s in raw_sources]
+            named_source_refs = [
+                {**ref, "source": doc_names.get(ref["source"], ref["source"])}
+                for ref in raw_source_refs
+            ]
+            named_sources = list(dict.fromkeys(ref["source"] for ref in named_source_refs))
             answer_text = "".join(full_answer)
             answer_data = {
                 "answer": answer_text,
                 "sources": named_sources,
+                "source_refs": named_source_refs,
                 "rewrites": meta.get("rewrite_count", 0),
             }
             set_job_status(job_id, "completed", answer_data)
-            yield f"data: {json.dumps({'done': True, 'sources': named_sources, 'rewrites': meta.get('rewrite_count', 0)})}\n\n"
-            save_chat_message(req.question, answer_text, named_sources)
+            yield f"data: {json.dumps({'done': True, 'sources': named_sources, 'source_refs': named_source_refs, 'rewrites': meta.get('rewrite_count', 0)})}\n\n"
+            save_chat_message(req.question, answer_text, named_sources, named_source_refs)
         except Exception as e:
             set_job_status(job_id, "failed", error=str(e))
             logger.error(f"Stream query job {job_id} failed: {e}")

@@ -13,6 +13,7 @@ _client = ollama.AsyncClient()
 
 
 async def classify_intent_node(state: QueryState) -> dict:
+    await adispatch_custom_event("status", "Classifying intent...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
         "content": (
@@ -44,23 +45,24 @@ async def chitchat_node(state: QueryState) -> dict:
             full.append(token)
             await adispatch_custom_event("token", token)
     await adispatch_custom_event("final_meta", {
-        "sources": [],
+        "source_refs": [],
         "rewrite_count": state.get("rewrite_count", 0),
     })
-    return {"answer": "".join(full), "sources": []}
+    return {"answer": "".join(full), "source_refs": []}
 
 
 async def retrieve_node(state: QueryState) -> dict:
+    await adispatch_custom_event("status", "Searching documents...")
     query_vec = (await asyncio.to_thread(embed_texts, [state["question"]]))[0]
     result = QdrantStorage().search(query_vec, state.get("top_k", 5))
-    return {"contexts": result["contexts"], "sources": result["sources"]}
+    return {"contexts": result["contexts"], "source_refs": result["source_refs"]}
 
 
 async def grade_docs_node(state: QueryState) -> dict:
-    question = state["question"]
-    relevant_contexts: list[str] = []
-    relevant_sources: list[str] = []
-    for i, ctx in enumerate(state["contexts"]):
+    await adispatch_custom_event("status", f"Grading {len(state['contexts'])} chunks...")
+    question = state.get("original_question", state["question"])
+
+    async def _grade(ctx: str) -> bool:
         resp = await _client.chat(model="llama3.2", messages=[{
             "role": "user",
             "content": (
@@ -68,11 +70,15 @@ async def grade_docs_node(state: QueryState) -> dict:
                 f"Question: {question}\n\nDocument: {ctx[:600]}"
             ),
         }])
-        if "yes" in resp["message"]["content"].lower():
+        return "yes" in resp["message"]["content"].lower()
+
+    results = await asyncio.gather(*[_grade(ctx) for ctx in state["contexts"]])
+
+    relevant_contexts: list[str] = []
+    for i, (ctx, is_relevant) in enumerate(zip(state["contexts"], results)):
+        if is_relevant:
             relevant_contexts.append(ctx)
-            if i < len(state.get("sources", [])):
-                relevant_sources.append(state["sources"][i])
-    return {"relevant_contexts": relevant_contexts, "relevant_sources": relevant_sources}
+    return {"relevant_contexts": relevant_contexts}
 
 
 def route_after_grading(state: QueryState) -> str:
@@ -82,6 +88,7 @@ def route_after_grading(state: QueryState) -> str:
 
 
 async def rewrite_query_node(state: QueryState) -> dict:
+    await adispatch_custom_event("status", f"Rewriting query (attempt {state.get('rewrite_count', 0) + 1})...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
         "content": (
@@ -98,18 +105,24 @@ async def rewrite_query_node(state: QueryState) -> dict:
 
 
 async def generate_node(state: QueryState) -> dict:
+    await adispatch_custom_event("status", "Generating answer...")
     contexts = state.get("relevant_contexts") or state.get("contexts", [])
-    sources = state.get("relevant_sources") or state.get("sources", [])
+    source_refs = state.get("source_refs", [])
     context_block = "\n\n".join(f"- {c}" for c in contexts)
     original_q = state.get("original_question", state["question"])
     prompt = (
-        "Use the following context to answer the question.\n\n"
+        "Answer the question based on the context below. "
+        "If the context does not contain enough information, say so clearly.\n\n"
         f"Context:\n{context_block}\n\n"
-        f"Question: {original_q}\n"
-        "Answer concisely using the context above."
+        f"Question: {original_q}"
     )
     messages = [
-        {"role": "system", "content": "You answer questions using only the provided context."},
+        {"role": "system", "content": (
+            "You are a document QA assistant. "
+            "Answer using the provided context as your primary source. "
+            "You may use general knowledge to reason and add helpful context, "
+            "but prioritize and ground your answer in the provided context."
+        )},
         *(state.get("history") or []),
         {"role": "user", "content": prompt},
     ]
@@ -120,10 +133,10 @@ async def generate_node(state: QueryState) -> dict:
             full.append(token)
             await adispatch_custom_event("token", token)
     await adispatch_custom_event("final_meta", {
-        "sources": sources,
+        "source_refs": source_refs,
         "rewrite_count": state.get("rewrite_count", 0),
     })
-    return {"answer": "".join(full), "sources": sources}
+    return {"answer": "".join(full), "source_refs": source_refs}
 
 
 def build_query_graph(checkpointer: MemorySaver):

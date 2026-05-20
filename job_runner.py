@@ -34,9 +34,14 @@ def init_db():
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 sources_json TEXT,
+                source_refs_json TEXT,
                 created_at TEXT NOT NULL
             )
         """)
+        try:
+            c.execute("ALTER TABLE chat_history ADD COLUMN source_refs_json TEXT")
+        except Exception:
+            pass
         c.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 doc_id TEXT PRIMARY KEY,
@@ -96,12 +101,12 @@ def get_job(job_id: str) -> Optional[dict]:
     }
 
 
-def save_chat_message(question: str, answer: str, sources: list[str]):
+def save_chat_message(question: str, answer: str, sources: list[str], source_refs: list[dict] | None = None):
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
-            "INSERT INTO chat_history (question, answer, sources_json, created_at) VALUES (?, ?, ?, ?)",
-            (question, answer, json.dumps(sources), now),
+            "INSERT INTO chat_history (question, answer, sources_json, source_refs_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (question, answer, json.dumps(sources), json.dumps(source_refs) if source_refs is not None else None, now),
         )
 
 
@@ -113,6 +118,7 @@ def get_chat_history() -> list[dict]:
             "question": r["question"],
             "answer": r["answer"],
             "sources": json.loads(r["sources_json"]) if r["sources_json"] else [],
+            "source_refs": json.loads(r["source_refs_json"]) if r["source_refs_json"] else [],
         }
         for r in rows
     ]
