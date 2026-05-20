@@ -204,12 +204,14 @@ hr {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
-    opacity: 0.08 !important;
-    transition: opacity 0.15s, transform 0.12s !important;
+    opacity: 0.55 !important;
+    filter: brightness(0) invert(1) !important;
+    transition: opacity 0.15s, transform 0.12s, filter 0.15s !important;
 }
 .st-key-doc_table [data-testid="stButton"] button:not(:disabled):hover {
-    background: rgba(248, 113, 113, 0.1) !important;
+    background: rgba(248, 113, 113, 0.12) !important;
     opacity: 1 !important;
+    filter: none !important;
     transform: scale(1.15) !important;
     box-shadow: none !important;
 }
