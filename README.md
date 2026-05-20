@@ -1,6 +1,6 @@
 # RAG App
 
-A fully local Retrieval-Augmented Generation (RAG) pipeline. Ingest PDFs, ask questions, get grounded answers — no cloud APIs, no data leaves your machine.
+A fully local Retrieval-Augmented Generation (RAG) pipeline built on **FastAPI**. Ingest PDFs, ask questions, get grounded answers — no cloud APIs, no data leaves your machine.
 
 ---
 
@@ -175,7 +175,19 @@ docker run -d --name qdrant -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/q
 
 Qdrant dashboard: `http://localhost:6333/dashboard`
 
-### 5. Pull Ollama models
+### 5. Configure environment variables
+
+Create a `.env` file in the project root:
+
+```env
+QDRANT_URL=http://localhost:6333
+DB_PATH=jobs.db
+API_BASE=http://localhost:8000
+```
+
+All three have working defaults — this step is optional unless you change ports or paths.
+
+### 6. Pull Ollama models
 
 Download Ollama from [https://ollama.com/download](https://ollama.com/download), then:
 
