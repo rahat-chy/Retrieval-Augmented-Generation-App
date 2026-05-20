@@ -10,6 +10,7 @@ A fully local Retrieval-Augmented Generation (RAG) pipeline. Ingest PDFs, ask qu
 - **Semantic chunking** — `SemanticSplitterNodeParser` from llama-index produces context-aware chunks instead of fixed-size splits
 - **Parent-document retrieval** — child chunks indexed for precision; parent context returned to the LLM for richer answers
 - **Image understanding** — non-decorative PDF images described by `llava` and injected as text context
+- **LangGraph pipelines** — ingest and query flows built as stateful LangGraph graphs with MemorySaver checkpointing and conditional edges
 - **Adaptive query pipeline** — intent classification, relevance grading, automatic query rewriting (up to 2 rounds), streaming SSE output
 - **Job runner** — SQLite-backed async jobs with status polling and one-click retry for failed ingests
 - **Streamlit UI** — dark-themed chat interface with live streaming, source citations, and document management
@@ -147,16 +148,11 @@ RAGApp/
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/your-username/RAGApp.git
+git clone https://github.com/rahat-chy/Retrieval-Augmented-Generation-App.git
 cd RAGApp
 ```
 
 ### 2. Install uv
-
-**macOS / Linux:**
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
 **Windows (PowerShell):**
 ```powershell
@@ -173,12 +169,8 @@ Creates `.venv` and installs all packages from `pyproject.toml`. No manual `pip 
 
 ### 4. Start Qdrant via Docker
 
-```bash
-docker run -d \
-  --name qdrant \
-  -p 6333:6333 \
-  -v qdrant_data:/qdrant/storage \
-  qdrant/qdrant
+```powershell
+docker run -d --name qdrant -p 6333:6333 -v qdrant_data:/qdrant/storage qdrant/qdrant
 ```
 
 Qdrant dashboard: `http://localhost:6333/dashboard`
@@ -236,38 +228,38 @@ ollama serve
 ### REST API
 
 **Ingest a PDF:**
-```bash
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"pdf_path": "/absolute/path/to/document.pdf", "source_id": "my-doc"}'
+```powershell
+curl -X POST http://localhost:8000/ingest `
+  -H "Content-Type: application/json" `
+  -d '{"pdf_path": "C:\\absolute\\path\\to\\document.pdf", "source_id": "my-doc"}'
 # → {"job_id": "...", "status": "running"}
 ```
 
 **Poll job status:**
-```bash
+```powershell
 curl http://localhost:8000/jobs/<job_id>
 # → {"status": "completed", "result": {"ingested": 42}, ...}
 ```
 
 **Ask a question (streaming SSE):**
-```bash
-curl -N -X POST http://localhost:8000/query/stream \
-  -H "Content-Type: application/json" \
+```powershell
+curl -X POST http://localhost:8000/query/stream `
+  -H "Content-Type: application/json" `
   -d '{"question": "What is the main finding?", "top_k": 5}'
 ```
 
 **List documents:**
-```bash
+```powershell
 curl http://localhost:8000/documents
 ```
 
 **Delete a document:**
-```bash
+```powershell
 curl -X DELETE http://localhost:8000/documents/<doc_id>
 ```
 
 **Retry a failed ingest:**
-```bash
+```powershell
 curl -X POST http://localhost:8000/jobs/<job_id>/retry
 ```
 
@@ -309,13 +301,30 @@ API_BASE=http://localhost:8000
 
 ---
 
+## LangGraph Pipelines
+
+Both pipelines are LangGraph `StateGraph` instances compiled with `MemorySaver` checkpointing:
+
+| Graph | File | Nodes |
+|-------|------|-------|
+| `ingest_graph` | `graphs/ingest_graph.py` | `load_and_chunk` → `embed_and_upsert` |
+| `query_graph` | `graphs/query_graph.py` | `classify_intent` → `retrieve` → `grade_docs` → [`rewrite_query` loop] → `generate` |
+
+Key LangGraph features used:
+- **Conditional edges** — `classify_intent` routes to `chitchat` or `rag`; `grade_docs` routes to `rewrite_query` or `generate`
+- **Rewrite loop** — `rewrite_query` feeds back into `retrieve` up to `MAX_REWRITES` (2) times
+- **`astream_events` (v2)** — query graph emits custom `token`, `status`, and `final_meta` events streamed as SSE to the client
+- **MemorySaver** — each job gets its own `thread_id` for isolated checkpointing
+
+---
+
 ## Tech Stack
 
 | Layer | Library / Tool |
 |-------|---------------|
 | API server | FastAPI + Uvicorn |
 | UI | Streamlit |
-| Pipeline orchestration | LangGraph |
+| Pipeline orchestration | LangGraph + LangChain Core |
 | PDF parsing | llama-index `PDFReader` |
 | Semantic chunking | llama-index `SemanticSplitterNodeParser` |
 | Image extraction | PyMuPDF (fitz) |
