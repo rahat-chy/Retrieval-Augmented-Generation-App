@@ -17,6 +17,7 @@ def _conn():
 
 def init_db():
     """Create jobs, chat_history, and documents tables if they don't exist; run additive migrations."""
+    logger.info("Initializing SQLite DB at %s", DB_PATH)
     with _conn() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -56,6 +57,7 @@ def init_db():
 
 def create_job(job_id: str, name: str, params: Optional[dict] = None):
     """Insert a new job row in 'running' status with serialized params."""
+    logger.info("Creating job id=%s name=%s", job_id, name)
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -66,6 +68,7 @@ def create_job(job_id: str, name: str, params: Optional[dict] = None):
 
 def reset_job_for_retry(job_id: str):
     """Clear error and result on a failed job and reset its status to 'running'."""
+    logger.info("Resetting job id=%s for retry", job_id)
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -76,6 +79,10 @@ def reset_job_for_retry(job_id: str):
 
 def set_job_status(job_id: str, status: str, result=None, error: Optional[str] = None):
     """Update a job's status, serialized result, and error message."""
+    if error:
+        logger.error("Job id=%s status=%s error=%s", job_id, status, error)
+    else:
+        logger.info("Job id=%s status=%s", job_id, status)
     with _conn() as c:
         c.execute(
             "UPDATE jobs SET status=?, result_json=?, error=?, updated_at=? WHERE id=?",
@@ -134,6 +141,7 @@ def get_chat_history() -> list[dict]:
 
 def register_document(doc_id: str, source_name: str, chunk_count: int):
     """Upsert a document record with its display name, chunk count, and ingestion timestamp."""
+    logger.info("Registering document doc_id=%s source_name=%s chunks=%d", doc_id, source_name, chunk_count)
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -159,5 +167,6 @@ def list_documents() -> list[dict]:
 
 def delete_document(doc_id: str):
     """Remove a document record from the documents table by its UUID."""
+    logger.info("Deleting document doc_id=%s", doc_id)
     with _conn() as c:
         c.execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))

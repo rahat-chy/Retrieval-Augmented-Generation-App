@@ -31,7 +31,9 @@ query_graph = build_query_graph(_checkpointer)
 @app.on_event("startup")
 async def startup():
     """Initialize the SQLite job database on app startup."""
+    logger.info("RAGApp starting up")
     init_db()
+    logger.info("RAGApp startup complete")
 
 
 # --- Request models ---
@@ -51,6 +53,7 @@ class QueryRequest(BaseModel):
 
 async def _run_ingest(job_id: str, pdf_path: str, source_id: str, source_name: str, thread_id: str | None = None):
     """Run the ingest LangGraph in a thread, update job status, and register the document on success."""
+    logger.info("Starting ingest job_id=%s pdf_path=%s source_id=%s", job_id, pdf_path, source_id)
     try:
         config = {"configurable": {"thread_id": thread_id or job_id}}
         result = await asyncio.to_thread(
@@ -58,11 +61,12 @@ async def _run_ingest(job_id: str, pdf_path: str, source_id: str, source_name: s
             {"pdf_path": pdf_path, "source_id": source_id, "chunks": [], "ingested": 0},
             config,
         )
+        logger.info("Ingest job_id=%s complete: %d chunks ingested", job_id, result["ingested"])
         set_job_status(job_id, "completed", {"ingested": result["ingested"]})
         register_document(source_id, source_name, result["ingested"])
     except Exception as e:
         set_job_status(job_id, "failed", error=str(e))
-        logger.error(f"Ingest job {job_id} failed: {e}")
+        logger.error("Ingest job_id=%s failed: %s", job_id, e)
 
 
 # --- Endpoints ---
@@ -73,6 +77,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
     doc_id = str(uuid.uuid4())
     source_name = req.source_id or req.pdf_path
+    logger.info("POST /ingest job_id=%s pdf_path=%s source_name=%s", job_id, req.pdf_path, source_name)
     create_job(job_id, "ingest", {"pdf_path": req.pdf_path, "source_id": doc_id, "source_name": source_name})
     background_tasks.add_task(_run_ingest, job_id, req.pdf_path, doc_id, source_name)
     return {"job_id": job_id, "status": "running"}
@@ -83,6 +88,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
 async def query_stream(req: QueryRequest):
     """Stream query tokens and status events via SSE, then persist the exchange to chat history."""
     job_id = str(uuid.uuid4())
+    logger.info("POST /query/stream job_id=%s question='%s'", job_id, req.question[:100])
     create_job(job_id, "query", {"question": req.question, "top_k": req.top_k})
 
     async def event_stream():
@@ -134,7 +140,7 @@ async def query_stream(req: QueryRequest):
             save_chat_message(req.question, answer_text, named_sources, named_source_refs)
         except Exception as e:
             set_job_status(job_id, "failed", error=str(e))
-            logger.error(f"Stream query job {job_id} failed: {e}")
+            logger.error("Stream query job_id=%s failed: %s", job_id, e)
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -162,6 +168,7 @@ async def history():
 @app.post("/jobs/{job_id}/retry")
 async def retry_job(job_id: str, background_tasks: BackgroundTasks):
     """Reset a failed job and re-run its pipeline with a fresh LangGraph thread ID."""
+    logger.info("POST /jobs/%s/retry", job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -193,6 +200,8 @@ async def get_documents():
 @app.delete("/documents/{doc_id}")
 async def delete_doc(doc_id: str):
     """Delete a document's vectors from Qdrant and its metadata record from the DB."""
+    logger.info("DELETE /documents/%s", doc_id)
     QdrantStorage().delete_by_source(doc_id)
     delete_document(doc_id)
+    logger.info("Document %s deleted from Qdrant and DB", doc_id)
     return {"deleted": doc_id}

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import ollama
 from langchain_core.callbacks import adispatch_custom_event
 from langgraph.graph import StateGraph, START, END
@@ -8,12 +9,15 @@ from lib.state import QueryState
 from data_loader import embed_texts
 from vector_db import QdrantStorage
 
+logger = logging.getLogger(__name__)
+
 MAX_REWRITES = 2
 _client = ollama.AsyncClient()
 
 
 async def classify_intent_node(state: QueryState) -> dict:
     """LangGraph node: classify the question as 'rag' or 'chitchat' using llama3.2."""
+    logger.info("Node classify_intent: question='%s'", state["question"][:100])
     await adispatch_custom_event("status", "Classifying intent...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
@@ -26,6 +30,7 @@ async def classify_intent_node(state: QueryState) -> dict:
     }])
     raw = resp["message"]["content"].strip().lower()
     intent = "chitchat" if "chitchat" in raw else "rag"
+    logger.info("Intent classified as '%s'", intent)
     return {"intent": intent}
 
 
@@ -36,6 +41,7 @@ def route_after_classify(state: QueryState) -> str:
 
 async def chitchat_node(state: QueryState) -> dict:
     """LangGraph node: handle small talk with streaming tokens; skips document retrieval."""
+    logger.info("Node chitchat: question='%s'", state["question"][:100])
     messages = [
         {"role": "system", "content": "You are a helpful assistant. Reply conversationally."},
         *(state.get("history") or []),
@@ -47,6 +53,7 @@ async def chitchat_node(state: QueryState) -> dict:
         if token:
             full.append(token)
             await adispatch_custom_event("token", token)
+    logger.info("Node chitchat complete: %d tokens", len(full))
     await adispatch_custom_event("final_meta", {
         "source_refs": [],
         "rewrite_count": state.get("rewrite_count", 0),
@@ -56,14 +63,17 @@ async def chitchat_node(state: QueryState) -> dict:
 
 async def retrieve_node(state: QueryState) -> dict:
     """LangGraph node: embed the current question and search Qdrant for top-k contexts."""
+    logger.info("Node retrieve: question='%s' top_k=%d", state["question"][:100], state.get("top_k", 5))
     await adispatch_custom_event("status", "Searching documents...")
     query_vec = (await asyncio.to_thread(embed_texts, [state["question"]]))[0]
     result = QdrantStorage().search(query_vec, state.get("top_k", 5))
+    logger.info("Node retrieve complete: %d contexts found", len(result["contexts"]))
     return {"contexts": result["contexts"], "source_refs": result["source_refs"]}
 
 
 async def grade_docs_node(state: QueryState) -> dict:
     """LangGraph node: grade all retrieved chunks for relevance in parallel using llama3.2."""
+    logger.info("Node grade_docs: grading %d chunks", len(state["contexts"]))
     await adispatch_custom_event("status", f"Grading {len(state['contexts'])} chunks...")
     question = state.get("original_question", state["question"])
 
@@ -84,6 +94,7 @@ async def grade_docs_node(state: QueryState) -> dict:
     for i, (ctx, is_relevant) in enumerate(zip(state["contexts"], results)):
         if is_relevant:
             relevant_contexts.append(ctx)
+    logger.info("Node grade_docs complete: %d/%d chunks relevant", len(relevant_contexts), len(state["contexts"]))
     return {"relevant_contexts": relevant_contexts}
 
 
@@ -96,6 +107,7 @@ def route_after_grading(state: QueryState) -> str:
 
 async def rewrite_query_node(state: QueryState) -> dict:
     """LangGraph node: rewrite the current question using llama3.2 to improve retrieval."""
+    logger.info("Node rewrite_query: attempt %d, original='%s'", state.get("rewrite_count", 0) + 1, state.get("original_question", state["question"])[:100])
     await adispatch_custom_event("status", f"Rewriting query (attempt {state.get('rewrite_count', 0) + 1})...")
     resp = await _client.chat(model="llama3.2", messages=[{
         "role": "user",
@@ -106,16 +118,19 @@ async def rewrite_query_node(state: QueryState) -> dict:
             "Return only the rewritten query, nothing else."
         ),
     }])
+    new_question = resp["message"]["content"].strip()
+    logger.info("Node rewrite_query complete: new_question='%s'", new_question[:100])
     return {
-        "question": resp["message"]["content"].strip(),
+        "question": new_question,
         "rewrite_count": state.get("rewrite_count", 0) + 1,
     }
 
 
 async def generate_node(state: QueryState) -> dict:
     """LangGraph node: generate a grounded answer from relevant contexts with streaming tokens."""
-    await adispatch_custom_event("status", "Generating answer...")
     contexts = state.get("relevant_contexts") or state.get("contexts", [])
+    logger.info("Node generate: %d contexts, question='%s'", len(contexts), state.get("original_question", state["question"])[:100])
+    await adispatch_custom_event("status", "Generating answer...")
     source_refs = state.get("source_refs", [])
     context_block = "\n\n".join(f"- {c}" for c in contexts)
     original_q = state.get("original_question", state["question"])
@@ -141,6 +156,7 @@ async def generate_node(state: QueryState) -> dict:
         if token:
             full.append(token)
             await adispatch_custom_event("token", token)
+    logger.info("Node generate complete: %d tokens", len(full))
     await adispatch_custom_event("final_meta", {
         "source_refs": source_refs,
         "rewrite_count": state.get("rewrite_count", 0),
