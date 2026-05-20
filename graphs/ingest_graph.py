@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from lib.state import IngestState
-from data_loader import load_and_chunk_pdf, embed_texts
+from data_loader import load_and_chunk_pdf, embed_texts, bm25_embed_texts
 from vector_db import QdrantStorage
 
 logger = logging.getLogger(__name__)
@@ -19,10 +19,12 @@ def load_and_chunk_node(state: IngestState) -> dict:
 
 
 def embed_and_upsert_node(state: IngestState) -> dict:
-    """LangGraph node: embed all chunks and upsert their vectors and payloads into Qdrant."""
+    """LangGraph node: embed all chunks (dense+sparse) and upsert into Qdrant."""
     chunks = state["chunks"]
+    texts = [c["text"] for c in chunks]
     logger.info("Node embed_and_upsert: embedding %d chunks", len(chunks))
-    vecs = embed_texts([c["text"] for c in chunks])
+    dense_vecs = embed_texts(texts)
+    sparse_vecs = bm25_embed_texts(texts)
     ids = [c["id"] for c in chunks]
     payload = [
         {
@@ -33,7 +35,7 @@ def embed_and_upsert_node(state: IngestState) -> dict:
         }
         for c in chunks
     ]
-    QdrantStorage().upsert(ids, vecs, payload)
+    QdrantStorage().upsert(ids, dense_vecs, sparse_vecs, payload)
     logger.info("Node embed_and_upsert complete: %d vectors stored", len(chunks))
     return {"ingested": len(chunks)}
 

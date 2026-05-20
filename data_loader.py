@@ -3,6 +3,7 @@ import logging
 import uuid
 import fitz  # pymupdf
 import ollama
+from fastembed import SparseTextEmbedding
 from sentence_transformers import SentenceTransformer
 from llama_index.core import Document
 from llama_index.readers.file import PDFReader
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _embed_model = SentenceTransformer(EMBED_MODEL)
 _llama_embed = HuggingFaceEmbedding(model_name=EMBED_MODEL)
+_bm25_model = SparseTextEmbedding(model_name="Qdrant/bm25")
 
 
 def _describe_image(image_bytes: bytes, ext: str) -> str:
@@ -139,3 +141,12 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     """Encode a list of texts into 384-dim float vectors using all-MiniLM-L6-v2."""
     logger.debug("Embedding %d texts", len(texts))
     return _embed_model.encode(texts, convert_to_numpy=True).tolist()
+
+
+def bm25_embed_texts(texts: list[str]) -> list[dict]:
+    """Return BM25 sparse vectors as list of {indices, values} dicts using Qdrant/bm25."""
+    logger.debug("BM25 embedding %d texts", len(texts))
+    return [
+        {"indices": e.indices.tolist(), "values": e.values.tolist()}
+        for e in _bm25_model.embed(texts)
+    ]

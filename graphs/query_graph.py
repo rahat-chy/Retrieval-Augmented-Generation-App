@@ -6,7 +6,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from lib.state import QueryState
-from data_loader import embed_texts
+from data_loader import embed_texts, bm25_embed_texts
 from vector_db import QdrantStorage
 
 logger = logging.getLogger(__name__)
@@ -62,11 +62,16 @@ async def chitchat_node(state: QueryState) -> dict:
 
 
 async def retrieve_node(state: QueryState) -> dict:
-    """LangGraph node: embed the current question and search Qdrant for top-k contexts."""
-    logger.info("Node retrieve: question='%s' top_k=%d", state["question"][:100], state.get("top_k", 5))
+    """LangGraph node: hybrid-embed the question and search Qdrant with RRF fusion."""
+    question = state["question"]
+    top_k = state.get("top_k", 5)
+    logger.info("Node retrieve: question='%s' top_k=%d", question[:100], top_k)
     await adispatch_custom_event("status", "Searching documents...")
-    query_vec = (await asyncio.to_thread(embed_texts, [state["question"]]))[0]
-    result = QdrantStorage().search(query_vec, state.get("top_k", 5))
+    dense_vec, sparse_vec = await asyncio.gather(
+        asyncio.to_thread(lambda: embed_texts([question])[0]),
+        asyncio.to_thread(lambda: bm25_embed_texts([question])[0]),
+    )
+    result = QdrantStorage().search(dense_vec, sparse_vec, top_k)
     logger.info("Node retrieve complete: %d contexts found", len(result["contexts"]))
     return {"contexts": result["contexts"], "source_refs": result["source_refs"]}
 
