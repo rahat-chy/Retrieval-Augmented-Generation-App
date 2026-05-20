@@ -1,4 +1,5 @@
 import logging
+import os
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -12,7 +13,8 @@ logger = logging.getLogger(__name__)
 class QdrantStorage:
     """Thin wrapper around QdrantClient for the RAG pipeline's vector store."""
 
-    def __init__(self, url="http://localhost:6333", collection="docs", dim=384):
+    def __init__(self, url=None, collection="docs", dim=384):
+        url = url or os.getenv("QDRANT_URL", "http://localhost:6333")
         """Connect to Qdrant and create the COSINE collection if it doesn't exist."""
         logger.debug("Connecting to Qdrant at %s", url)
         self.client = QdrantClient(url=url, timeout=30)

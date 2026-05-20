@@ -1,11 +1,12 @@
 import sqlite3
 import json
 import logging
+import os
 from typing import Optional
 from datetime import datetime, timezone
 
 logger = logging.getLogger("uvicorn")
-DB_PATH = "jobs.db"
+DB_PATH = os.getenv("DB_PATH", "jobs.db")
 
 
 def _conn():
