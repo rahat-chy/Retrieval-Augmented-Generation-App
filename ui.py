@@ -149,6 +149,15 @@ hr {
     background-color: rgba(255, 255, 255, 0.12) !important;
     color: rgba(255, 255, 255, 0.35) !important;
     border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    cursor: not-allowed !important;
+}
+[data-testid="stButton"] > button:not(:disabled),
+[data-testid="stFormSubmitButton"] button:not(:disabled) {
+    cursor: pointer !important;
+}
+[data-testid="stFormSubmitButton"] button:disabled {
+    cursor: not-allowed !important;
+    opacity: 0.4 !important;
 }
 [data-testid="stButton"] > button:not(:disabled) {
     background-color: #4f46e5 !important;
@@ -408,10 +417,6 @@ def _render_source_refs(refs: list[dict]):
         if excerpt:
             st.caption("Matched chunk:")
             st.text_area("", value=excerpt, height=120, disabled=True, key=uuid.uuid4().hex)
-        full_ctx = chunk.get("context_preview", "")
-        if full_ctx and full_ctx != excerpt:
-            with st.expander("Full context"):
-                st.text_area("", value=full_ctx, height=200, disabled=True, key=uuid.uuid4().hex)
 
 
 def _get_job(job_id: str) -> dict:
