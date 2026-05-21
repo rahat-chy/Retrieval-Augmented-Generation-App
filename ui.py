@@ -382,7 +382,6 @@ _defaults = {
     "ingest_last_msg": None,
     "ingest_tmp_path": None,
     "ingest_failed_job_id": None,
-    "ingest_failed_source_id": None,
     "pending_question": None,
     "streaming": False,
     "stream_history": [],
@@ -440,6 +439,7 @@ def _poll_ingest():
         st.session_state.ingest_last_msg = ("success", f"Ingested {ingested} chunks.")
         st.session_state.ingest_status = None
         st.session_state.ingest_job_id = None
+        st.session_state.ingest_failed_job_id = None
         st.session_state.uploader_key += 1
         st.session_state.documents_loaded = False
         tmp_path = st.session_state.ingest_tmp_path
@@ -453,7 +453,6 @@ def _poll_ingest():
     elif job["status"] == "failed":
         err = job.get("error", "unknown error")
         st.session_state.ingest_failed_job_id = st.session_state.ingest_job_id
-        st.session_state.ingest_failed_source_id = (job.get("params") or {}).get("source_id")
         st.session_state.ingest_last_msg = ("error", f"Ingest failed: {err}")
         st.session_state.ingest_status = None
         st.session_state.ingest_job_id = None
@@ -491,11 +490,7 @@ uploaded_file = st.file_uploader(
     key=f"file_uploader_{st.session_state.uploader_key}",
 )
 
-same_file = (
-    uploaded_file is not None
-    and uploaded_file.name == st.session_state.ingest_failed_source_id
-)
-retry_disabled = ingest_disabled or not st.session_state.ingest_failed_job_id or not same_file
+retry_disabled = ingest_disabled or not st.session_state.ingest_failed_job_id
 
 col_ingest, col_retry = st.columns(2)
 
@@ -630,28 +625,31 @@ with st.container():
                 _placeholder.markdown("⏳ _Thinking..._")
                 _parts: list[str] = []
 
-                with requests.post(
-                    f"{API_BASE}/query/stream",
-                    json={"question": _q, "top_k": 5, "history": _hist},
-                    stream=True,
-                    timeout=600,
-                ) as _resp:
-                    for _line in _resp.iter_lines():
-                        if not _line:
-                            continue
-                        if _line.startswith(b"data: "):
-                            _data = json.loads(_line[6:])
-                            if "status" in _data:
-                                _placeholder.markdown(f"⏳ _{_data['status']}_")
-                            elif "token" in _data:
-                                _parts.append(_data["token"])
-                                _placeholder.markdown("".join(_parts) + " ▌")
-                            elif _data.get("done"):
-                                st.session_state.stream_result = {
-                                    "sources": _data.get("sources", []),
-                                    "source_refs": _data.get("source_refs", []),
-                                    "rewrites": _data.get("rewrites", 0),
-                                }
+                try:
+                    with requests.post(
+                        f"{API_BASE}/query/stream",
+                        json={"question": _q, "top_k": 5, "history": _hist},
+                        stream=True,
+                        timeout=600,
+                    ) as _resp:
+                        for _line in _resp.iter_lines():
+                            if not _line:
+                                continue
+                            if _line.startswith(b"data: "):
+                                _data = json.loads(_line[6:])
+                                if "status" in _data:
+                                    _placeholder.markdown(f"⏳ _{_data['status']}_")
+                                elif "token" in _data:
+                                    _parts.append(_data["token"])
+                                    _placeholder.markdown("".join(_parts) + " ▌")
+                                elif _data.get("done"):
+                                    st.session_state.stream_result = {
+                                        "sources": _data.get("sources", []),
+                                        "source_refs": _data.get("source_refs", []),
+                                        "rewrites": _data.get("rewrites", 0),
+                                    }
+                except Exception as _e:
+                    st.error(f"Stream error: {_e}")
 
                 _full = "".join(_parts)
                 _placeholder.markdown(_full)

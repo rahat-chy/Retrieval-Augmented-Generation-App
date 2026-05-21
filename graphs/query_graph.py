@@ -96,7 +96,7 @@ async def grade_docs_node(state: QueryState) -> dict:
     results = await asyncio.gather(*[_grade(ctx) for ctx in state["contexts"]])
 
     relevant_contexts: list[str] = []
-    for i, (ctx, is_relevant) in enumerate(zip(state["contexts"], results)):
+    for ctx, is_relevant in zip(state["contexts"], results):
         if is_relevant:
             relevant_contexts.append(ctx)
     logger.info("Node grade_docs complete: %d/%d chunks relevant", len(relevant_contexts), len(state["contexts"]))

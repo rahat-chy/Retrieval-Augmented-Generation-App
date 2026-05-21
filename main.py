@@ -2,6 +2,7 @@ import json
 import logging
 import uuid
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
@@ -21,19 +22,22 @@ from vector_db import QdrantStorage
 load_dotenv()
 
 logger = logging.getLogger("uvicorn")
-app = FastAPI()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize the SQLite job database on startup."""
+    logger.info("RAGApp starting up")
+    init_db()
+    logger.info("RAGApp startup complete")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 _checkpointer = MemorySaver()
 ingest_graph = build_ingest_graph(_checkpointer)
 query_graph = build_query_graph(_checkpointer)
-
-
-@app.on_event("startup")
-async def startup():
-    """Initialize the SQLite job database on app startup."""
-    logger.info("RAGApp starting up")
-    init_db()
-    logger.info("RAGApp startup complete")
 
 
 # --- Request models ---
@@ -143,6 +147,7 @@ async def query_stream(req: QueryRequest):
             logger.error("Stream query job_id=%s failed: %s", job_id, e)
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
+
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
@@ -178,6 +183,12 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="Job has no stored params, cannot retry")
 
     reset_job_for_retry(job_id)
+
+    # Purge any partial vectors from the failed attempt before retrying
+    if job["name"] == "ingest":
+        p = job["params"]
+        QdrantStorage().delete_by_source(p["source_id"])
+        logger.info("Cleared partial vectors for source=%s before retry", p["source_id"])
 
     # Retry uses a fresh thread_id so LangGraph runs from scratch
     retry_thread_id = str(uuid.uuid4())
